@@ -49,6 +49,12 @@ tr.h{cursor:pointer}
 .mbar .bt i.d{background:var(--ok)}
 .badges{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
 .bch{background:var(--tr);border-radius:99px;padding:4px 10px;font-size:12px;white-space:nowrap}
+select{font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:7px 9px;max-width:100%}
+a.btn{display:inline-block;background:var(--ac);color:#fff;border-radius:8px;padding:7px 9px;text-decoration:none}
+input[type=date]{width:auto}
+.ev .when{color:var(--ac);font-weight:600;font-size:13px;white-space:nowrap}
+.ev .meta{margin:4px 0}
+.bib{display:inline-block;background:var(--tr);border-radius:6px;padding:2px 8px;font-weight:600;font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -62,6 +68,19 @@ tr.h{cursor:pointer}
   <h2>Leaderboard</h2>
   <div id="list"></div>
   <div class="act" id="copyrow" style="display:none"><button class="g" onclick="copyPrev()">Start this month: copy runners &amp; targets from last month</button></div>
+  <div id="evsec" style="display:none">
+    <h2>🏁 Upcoming events</h2>
+    <div id="evlist"></div>
+    <div class="act"><button class="g" onclick="document.getElementById('evform').classList.toggle('on')">+ Add event</button></div>
+    <div class="ed" id="evform">
+      <input class="w" id="evn" placeholder="Event name" maxlength="80">
+      <input type="date" id="evd" aria-label="Event date">
+      <input class="w" id="evl" placeholder="Location" maxlength="80">
+      <input class="w" id="evx" placeholder="Distances (e.g. 10K, 21K)" maxlength="60">
+      <input class="w" id="evu" placeholder="Registration link (https://...)" inputmode="url">
+      <button onclick="addEvent()">Save event</button>
+    </div>
+  </div>
   <h2>Join / add runner</h2>
   <div class="act"><input class="w" id="an" placeholder="Name"><input type="number" id="at" placeholder="Target km" min="1"><button onclick="addRunner()">Add</button></div>
   <h2>WhatsApp message</h2>
@@ -90,7 +109,7 @@ function load(){
   if(SB_URL.indexOf("PASTE")==0){document.getElementById("setup").style.display="block";return}
   document.getElementById("ml").textContent=lbl(M);
   document.getElementById("nb").disabled=(M>=CUR);
-  Promise.all([api("runners?month=eq."+M+"&select=*"),api("runners?select=month,name,km,target")]).then(function(a){R=a[0]||[];ALL=a[1]||[];render()}).catch(err)
+  Promise.all([api("runners?month=eq."+M+"&select=*"),api("runners?select=month,name,km,target")]).then(function(a){R=a[0]||[];ALL=a[1]||[];render();loadEvents()}).catch(err)
 }
 function render(){
   var r=R.slice().sort(function(a,b){return b.km-a.km}),tot=0,ach=0;
@@ -146,14 +165,91 @@ function openProfile(name){
     '<h2>Month-wise log</h2><div class="mbars">'+(bars||'<div class="sub">No history yet</div>')+'</div>';
   document.getElementById("ov").classList.add("on");
 }
-function tog(id){document.getElementById("e"+id).classList.toggle("on")}
-function addKm(id){var v=parseFloat(document.getElementById("a"+id).value);if(!(v>0))return;api("rpc/add_km",{method:"POST",body:{p_id:id,p_km:v}}).then(load).catch(err)}
-function save(id){var k=parseFloat(document.getElementById("k"+id).value),t=parseFloat(document.getElementById("t"+id).value);if(isNaN(k)||k<0||!(t>0))return toast("Check the numbers");api("runners?id=eq."+id,{method:"PATCH",body:{km:k,target:t}}).then(load).catch(err)}
-function addRunner(){var n=document.getElementById("an").value.trim(),t=parseFloat(document.getElementById("at").value);if(!n||!(t>0))return toast("Enter name and target");api("runners",{method:"POST",body:{month:M,name:n,target:t,km:0}}).then(function(){document.getElementById("an").value="";document.getElementById("at").value="";load()}).catch(err)}
-function del(id){var p=prompt("Admin PIN to remove this runner:");if(!p)return;api("rpc/delete_runner",{method:"POST",prefer:"return=representation",body:{p_id:id,p_pin:p}}).then(function(ok){toast(ok?"Removed":"Wrong PIN");load()}).catch(err)}
-function copyPrev(){var p=M.split("-"),pm=ym(new Date(p[0],p[1]-2,1));api("runners?month=eq."+pm+"&select=name,target",{prefer:"return=representation"}).then(function(a){if(!a.length)return toast("No runners last month");return api("runners?on_conflict=month,name",{method:"POST",prefer:"resolution=ignore-duplicates,return=minimal",body:a.map(function(x){return{month:M,name:x.name,target:x.target,km:0}})}).then(load)}).catch(err)}
-function copyMsg(){var t=document.getElementById("msg");t.select();var ok=false;try{ok=document.execCommand("copy")}catch(e){}if(!ok&&navigator.clipboard){navigator.clipboard.writeText(t.value);ok=true}toast(ok?"Copied ✓":"Select and copy")}
-load();setInterval(function(){if(!document.hidden&&!document.activeElement.matches("input"))load()},20000);
-</script>
-</body>
-</html>
+/* ---------- Events & bibs ---------- */
+var EV=[],BIBS=[];
+function ymd(d){return ym(d)+"-"+String(d.getDate()).padStart(2,"0")}
+function pd(s){var p=s.split("-");return new Date(p[0],p[1]-1,p[2])}
+function safeUrl(u){return /^https?:\/\//i.test(u||"")?u:""}
+function copyText(t){
+  var done=function(){toast("Copied ✓")};
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,function(){toast("Select and copy")});return}
+  var a=document.createElement("textarea");a.value=t;document.body.appendChild(a);a.select();
+  var ok=false;try{ok=document.execCommand("copy")}catch(e){}
+  document.body.removeChild(a);toast(ok?"Copied ✓":"Select and copy")
+}
+function loadEvents(){
+  var t=ymd(new Date());
+  return Promise.all([api("events?event_date=gte."+t+"&order=event_date.asc&select=*"),api("event_bibs?select=*")]).then(function(a){
+    EV=a[0]||[];BIBS=a[1]||[];
+    document.getElementById("evsec").style.display="block";
+    renderEvents()
+  }).catch(function(){})
+}
+function renderEvents(){
+  var t0=pd(ymd(new Date()));
+  document.getElementById("evlist").innerHTML=EV.length?EV.map(function(e){
+    var days=Math.round((pd(e.event_date)-t0)/86400000),when=days===0?"Today":days===1?"Tomorrow":"in "+days+" days";
+    var ds=pd(e.event_date).toLocaleDateString("en-IN",{weekday:"short",day:"numeric",month:"short",year:"numeric"});
+    var meta=["📅 "+ds].concat(e.location?["📍 "+esc(e.location)]:[]).concat(e.distances?["🏃 "+esc(e.distances)]:[]).join(" · ");
+    var url=safeUrl(e.reg_url),n=BIBS.filter(function(b){return b.event_id===e.id}).length;
+    return '<div class="row ev"><div class="top"><b>'+esc(e.name)+'</b><span class="when">'+when+'</span></div><div class="sub meta">'+meta+'</div>'+
+      '<div class="act" style="margin-top:8px">'+(url?'<a class="btn" href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">Register ↗</a>':'')+
+      '<button onclick="openBibs('+e.id+')">🎽 Bibs ('+n+')</button><button class="g" onclick="delEvent('+e.id+')">Remove (admin)</button></div></div>'
+  }).join(""):'<div class="card sub">No upcoming events yet. Add one below!</div>'
+}
+function addEvent(){
+  var n=document.getElementById("evn").value.trim(),d=document.getElementById("evd").value,
+      l=document.getElementById("evl").value.trim(),x=document.getElementById("evx").value.trim(),u=document.getElementById("evu").value.trim();
+  if(!n||!d)return toast("Enter event name and date");
+  if(d<ymd(new Date()))return toast("Date can't be in the past");
+  if(u&&!safeUrl(u))return toast("Link must start with http:// or https://");
+  api("events",{method:"POST",body:{name:n,event_date:d,location:l||null,distances:x||null,reg_url:u||null}}).then(function(){
+    ["evn","evd","evl","evx","evu"].forEach(function(i){document.getElementById(i).value=""});
+    document.getElementById("evform").classList.remove("on");
+    toast("Event added");loadEvents()
+  }).catch(err)
+}
+function delEvent(id){
+  var p=prompt("Admin PIN to remove this event (its bibs are removed too):");if(!p)return;
+  api("rpc/delete_event",{method:"POST",prefer:"return=representation",body:{p_id:id,p_pin:p}}).then(function(ok){toast(ok?"Event removed":"Wrong PIN");loadEvents()}).catch(err)
+}
+function evNames(){
+  var s={};ALL.forEach(function(x){if(x.month===CUR)s[x.name]=1});
+  var a=Object.keys(s);if(!a.length)ALL.forEach(function(x){s[x.name]=1}),a=Object.keys(s);
+  return a.sort(function(a,b){return a.localeCompare(b)})
+}
+function bibsFor(id){return BIBS.filter(function(b){return b.event_id===id}).sort(function(a,b){return a.runner_name.localeCompare(b.runner_name)})}
+function openBibs(id){
+  var e=EV.filter(function(x){return x.id===id})[0];if(!e)return;
+  var b=bibsFor(id),names=evNames(),have={};b.forEach(function(x){have[x.runner_name]=1});
+  var missing=names.filter(function(n){return !have[n]});
+  document.getElementById("mc").innerHTML=
+    '<div class="mhead"><h3>🎽 '+esc(e.name)+'</h3><button class="g" onclick="closeModal()">Close</button></div>'+
+    '<div class="sub">'+b.length+' of '+names.length+' runners have shared their bib</div>'+
+    '<h2>Share your bib</h2><div class="act">'+
+      '<select id="bn" onchange="fillBib('+id+')"><option value="">Select your name</option>'+names.map(function(n){return '<option>'+esc(n)+'</option>'}).join("")+'</select>'+
+      '<input id="bc" class="w" placeholder="Category (10K, 21K…)" maxlength="20">'+
+      '<input id="bb" placeholder="Bib no." maxlength="12" style="width:100px">'+
+      '<button onclick="saveBib('+id+')">Save</button></div>'+
+    '<div class="sub" style="margin-top:4px">Picked the wrong bib? Save again with the same name to update it.</div>'+
+    '<h2>Bib list</h2>'+(b.length?'<div class="card" style="padding:6px 10px"><table><tr><th>Runner</th><th>Category</th><th>Bib</th></tr>'+
+      b.map(function(x){return '<tr><td>'+esc(x.runner_name)+'</td><td>'+esc(x.category||"–")+'</td><td><span class="bib">'+esc(x.bib)+'</span></td></tr>'}).join("")+'</table></div>':'<div class="sub">No bibs shared yet.</div>')+
+    (missing.length?'<div class="sub" style="margin-top:8px">⏳ Yet to share: '+missing.map(esc).join(", ")+'</div>':'')+
+    (b.length?'<div class="act" style="margin-top:10px"><button class="g" onclick="copyBibs('+id+')">Copy list for WhatsApp</button></div>':'');
+  document.getElementById("ov").classList.add("on")
+}
+function fillBib(id){
+  var n=document.getElementById("bn").value,x=bibsFor(id).filter(function(y){return y.runner_name===n})[0];
+  document.getElementById("bc").value=x&&x.category?x.category:"";
+  document.getElementById("bb").value=x?x.bib:""
+}
+function saveBib(id){
+  var n=document.getElementById("bn").value,c=document.getElementById("bc").value.trim(),b=document.getElementById("bb").value.trim();
+  if(!n)return toast("Select your name");
+  if(!b)return toast("Enter your bib number");
+  api("event_bibs?on_conflict=event_id,runner_name",{method:"POST",prefer:"resolution=merge-duplicates,return=minimal",body:{event_id:id,runner_name:n,category:c||null,bib:b}}).then(function(){
+    toast("Bib saved ✓");loadEvents().then(function(){openBibs(id)})
+  }).catch(err)
+}
+function copyBibs(id){
+  var e=EV.filter(function(x){
